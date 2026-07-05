@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Interpreter Notes</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #0f1117;
+    --surf2:   #1a1d2e;
+    --border2: #2d3154;
+    --text:    #e2e8f0;
+    --muted:   #64748b;
+    --accent:  #6366f1;
+  }
+
+  html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font-family: 'Helvetica Neue', 'Noto Sans JP', sans-serif; }
+
+  /* ── HEADER ─────────────────────────── */
+  header {
+    background: var(--surf2);
+    border-bottom: 1px solid var(--border2);
+    padding: 10px 16px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    flex-shrink: 0; min-height: 56px;
+  }
+  header h1 { font-size: 0.95rem; font-weight: 700; color: #a5b4fc; white-space: nowrap; }
+
+  .hc { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+
+  .lang-toggle {
+    display: flex; background: var(--bg);
+    border: 1px solid var(--border2); border-radius: 8px; overflow: hidden;
+  }
+  .lang-toggle button {
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    font-size: 0.8rem; padding: 9px 14px; touch-action: manipulation;
+  }
+  .lang-toggle button.active { background: #4f46e5; color: #fff; }
+
+  .rec-btn, .clear-btn {
+    display: flex; align-items: center; gap: 6px;
+    border: none; border-radius: 8px;
+    color: #fff; cursor: pointer; font-size: 0.85rem; font-weight: 700;
+    padding: 9px 18px; touch-action: manipulation; justify-content: center;
+  }
+  .rec-btn { background: #16a34a; min-width: 116px; }
+  .rec-btn.on { background: #dc2626; animation: blink 1.4s infinite; }
+  .rec-btn:disabled { background: #334155; cursor: default; }
+  .clear-btn { background: #334155; }
+  .clear-btn:active { background: #475569; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.72} }
+  .dot { width: 8px; height: 8px; background: currentColor; border-radius: 50%; flex-shrink: 0; }
+
+  .status { display: flex; align-items: center; gap: 5px; font-size: 0.72rem; color: var(--muted); }
+  .status .ind { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .status.listening .ind { background: #22c55e; animation: blink 1s infinite; }
+  .status.loading .ind { background: #f59e0b; animation: blink 1s infinite; }
+
+  .err {
+    margin: 8px 16px 0; background: #3b1212; border: 1px solid #7f1d1d;
+    border-radius: 7px; color: #fca5a5; font-size: 0.8rem; padding: 8px 12px; display: none;
+  }
+  .err.on { display: block; }
+
+  /* ── KEYWORD STAGE: columns of sentence-blocks, like a paper notepad page ── */
+  #stage {
+    height: calc(100vh - 56px);
+    width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 20px 22px;
+    columns: 260px;
+    column-gap: 28px;
+  }
+
+  .kw-block {
+    break-inside: avoid;
+    padding: 10px 0;
+    border-top: 2px solid var(--border2);
+  }
+  .kw-block:first-child { border-top: none; }
+
+  .kw-row {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+  }
+
+  .chip {
+    border-radius: 8px; font-weight: 700;
+    padding: 7px 16px; white-space: nowrap;
+    animation: fadein 0.2s ease;
+  }
+  @keyframes fadein { from{opacity:0;transform:translateY(4px)} to{opacity:1;} }
+
+  .chip.name      { font-size: 1.25rem; background: #5b1a3f; color: #fda4c8; border: 1px solid #be185d; }
+  .chip.number    { font-size: 1.5rem;  background: #064a39; color: #6ee7b7; border: 1px solid #059669; }
+  .chip.term      { font-size: 1.1rem; background: #1c3764; color: #93c5fd; border: 1px solid #3b82f6; }
+  .chip.connector { font-size: 1.05rem; background: #4a3510; color: #fbbf24; border: 1px solid #d97706; }
+
+  .kw-hint { color: #334155; font-size: 1rem; padding: 4px 0; line-height: 1.8; }
+
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🎙 Interpreter Notes</h1>
+  <div class="hc">
+    <div class="lang-toggle">
+      <button id="btnJA" class="active" onclick="setLang('ja-JP')">日本語</button>
+      <button id="btnEN" onclick="setLang('en-US')">English</button>
+    </div>
+    <div class="status" id="statusEl">
+      <span class="ind"></span>
+      <span id="statusTxt">辞書読み込み中...</span>
+    </div>
+    <button class="rec-btn" id="recBtn" onclick="toggleRec()" disabled>
+      <span class="dot"></span><span id="recLabel">録音開始</span>
+    </button>
+    <button class="clear-btn" onclick="clearStage()">クリア</button>
+  </div>
+</header>
+
+<div class="err" id="errMsg"></div>
+
+<div id="stage">
+  <div class="kw-hint" id="kwHint">録音を開始すると、発言のキーワードがここに順番に表示されます。<br>発言が一区切りしたら「クリア」を押して次の発言に備えてください。</div>
+</div>
+
+<script src="vendor/kuromoji.js"></script>
+<script>
+// ════════════════════════════════════════════
+//  JAPANESE TOKENIZER (local, offline, zero-latency)
+// ════════════════════════════════════════════
+let tokenizer = null;
+
+kuromoji.builder({ dicPath: 'dict/' }).build((err, t) => {
+  if (err) { showErr('辞書の読み込みに失敗しました: ' + err.message); return; }
+  tokenizer = t;
+  recBtn.disabled = false;
+  setSt('idle', '待機中');
+});
+
+const DROP_POS = new Set(['助詞', '助動詞', '記号', 'フィラー', '空白']);
+
+// low-content nouns/verbs that are almost always grammatical filler rather than
+// substantive content, even though kuromoji tags them as independent words
+const DROP_SUFFIX = new Set(['たち', 'ら', 'ども', 'がた', 'など']);
+const LOW_CONTENT_VERBS = new Set(['いる', 'ある', 'なる', '思う', '感じる', '起きる']);
+
+// personal pronouns identify who is involved (often essential for interpreting) -
+// unlike anaphoric ones (それ・これ・あれ) which just point back to something already said
+const PERSONAL_PRONOUNS = new Set([
+  '私', 'わたし', 'わたくし', '僕', '俺', 'あたし', 'うち', '自分',
+  'あなた', '君', 'きみ', 'お前', 'おまえ',
+  '彼', '彼女', '皆さん', '皆様', '我々', 'われわれ'
+]);
+
+// demonstrative/vague adnominals (この・その・そんな・いろんな...) carry little content;
+// descriptive ones (小さな・大きな・おかしな...) are real content and should stay
+const DEMONSTRATIVE_ADNOMINALS = new Set([
+  'この', 'その', 'あの', 'どの', 'こんな', 'そんな', 'あんな', 'どんな',
+  'いろんな', 'いろいろな', 'あらゆる', 'いわゆる'
+]);
+
+// discourse connectors: objectively detectable (dictionary lookup, no semantic
+// judgment needed) markers of logical structure - sequencing, contrast, addition
+const DISCOURSE_ADVERBS = new Set([
+  'まず', '次に', '最後に', '一方', '他方', 'それから', 'それに', 'さらに', 'また',
+  'もちろん', '実際', 'つまり', '例えば', '特に', 'ただし', 'なお', 'ちなみに',
+  '逆に', '結局', '要するに', 'とにかく', 'ともかく', 'とりわけ', 'なぜなら',
+  'したがって', '従って', 'とりあえず', 'ひとまず', '要は'
+]);
+
+function tokenizeJA(text) {
+  const tokens = tokenizer.tokenize(text);
+  const chips = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const t = tokens[i];
+
+    if (DROP_POS.has(t.pos)) { i++; continue; }
+
+    if (t.pos === '名詞') {
+      const d1 = t.pos_detail_1;
+
+      // dependent/formal nouns (もの・こと・の・わけ・ん...)
+      if (d1 === '非自立') { i++; continue; }
+      // anaphoric pronouns (それ・これ・あれ) are dropped; personal ones (私・彼...) fall
+      // through to the generic noun handling below since they identify who's involved
+      if (d1 === '代名詞' && !PERSONAL_PRONOUNS.has(t.surface_form)) { i++; continue; }
+      if (d1 === '接尾' && DROP_SUFFIX.has(t.surface_form)) { i++; continue; }
+
+      // merge number + counter-suffix runs into a single chip, e.g. "3" + "人" -> "3人"
+      if (d1 === '数') {
+        let numStr = t.surface_form;
+        let j = i + 1;
+        while (j < tokens.length && tokens[j].pos === '名詞' && tokens[j].pos_detail_1 === '数') {
+          numStr += tokens[j].surface_form; j++;
+        }
+        if (j < tokens.length && tokens[j].pos === '名詞' && tokens[j].pos_detail_1 === '接尾') {
+          numStr += tokens[j].surface_form; j++;
+        }
+        chips.push({ text: numStr, type: 'number' });
+        i = j;
+        continue;
+      }
+
+      if (d1 === '固有名詞') {
+        chips.push({ text: t.surface_form, type: 'name' });
+        i++;
+        continue;
+      }
+
+      // generic noun: absorb trailing content-bearing suffixes (作業+中 -> 作業中,
+      // 爆発+的 -> 爆発的) and fuse with a following light verb する (出力+する -> 出力する)
+      let word = t.surface_form;
+      let j = i + 1;
+      while (j < tokens.length && tokens[j].pos === '名詞' && tokens[j].pos_detail_1 === '接尾'
+             && !DROP_SUFFIX.has(tokens[j].surface_form)) {
+        word += tokens[j].surface_form; j++;
+      }
+      if (j < tokens.length && tokens[j].pos === '動詞' && tokens[j].basic_form === 'する') {
+        word += 'する'; j++;
+      }
+      chips.push({ text: word, type: 'term' });
+      i = j;
+      continue;
+    }
+
+    if (t.pos === '動詞') {
+      // auxiliary usage (〜ている・〜てしまう・〜てみる etc.) and light/filler verbs
+      if (t.pos_detail_1 === '非自立') { i++; continue; }
+      if (t.basic_form === 'する' || LOW_CONTENT_VERBS.has(t.basic_form)) { i++; continue; }
+      chips.push({ text: t.basic_form && t.basic_form !== '*' ? t.basic_form : t.surface_form, type: 'term' });
+      i++;
+      continue;
+    }
+
+    const word = (t.basic_form && t.basic_form !== '*') ? t.basic_form : t.surface_form;
+
+    if (t.pos === '連体詞' && DEMONSTRATIVE_ADNOMINALS.has(word)) { i++; continue; }
+
+    if (t.pos === '接続詞' || (t.pos === '副詞' && DISCOURSE_ADVERBS.has(word))) {
+      chips.push({ text: word, type: 'connector' });
+      i++;
+      continue;
+    }
+
+    chips.push({ text: word, type: 'term' });
+    i++;
+  }
+  return chips;
+}
+
+// ════════════════════════════════════════════
+//  ENGLISH FILTER (local, stopword-based)
+// ════════════════════════════════════════════
+const STOPWORDS_EN = new Set([
+  'a','an','the','of','in','on','at','to','for','with','by','from','into','onto',
+  'up','down','over','under','again','further','then','once','here','there',
+  'when','where','why','how','all','any','both','each','few','more','most','other',
+  'some','such','no','nor','not','only','own','same','so','than','too','very',
+  's','t','can','will','just','don','should','now',
+  'is','are','was','were','be','been','being','am','do','does','did','doing',
+  'have','has','had','having','and','but','or','if','because','as','until','while',
+  'i','you','he','she','it','we','they','me','him','her','us','them',
+  'my','your','his','its','our','their','this','that','these','those','which','who','whom','what'
+]);
+
+const EN_UNITS = ['%','percent','dollars?','euros?','yen','people','persons?','times?',
+  'years?','months?','days?','hours?','minutes?','seconds?','tons?','kg','km','g','m','cm','mm'];
+const EN_UNIT_RE = new RegExp('^(' + EN_UNITS.join('|') + ')$', 'i');
+
+function tokenizeEN(text) {
+  const words = text.split(/\s+/).map(w => w.replace(/^[^\w%]+|[^\w%]+$/g, '')).filter(Boolean);
+  const chips = [];
+  let i = 0;
+  while (i < words.length) {
+    const w = words[i];
+    if (/^[0-9][0-9,.]*$/.test(w)) {
+      let num = w;
+      if (i + 1 < words.length && EN_UNIT_RE.test(words[i + 1])) { num += ' ' + words[i + 1]; i++; }
+      chips.push({ text: num, type: 'number' });
+      i++;
+      continue;
+    }
+    const lower = w.toLowerCase();
+    if (!w || STOPWORDS_EN.has(lower)) { i++; continue; }
+    const isName = w[0] === w[0].toUpperCase() && w[0] !== w[0].toLowerCase();
+    chips.push({ text: w, type: isName ? 'name' : 'term' });
+    i++;
+  }
+  return chips;
+}
+
+// ════════════════════════════════════════════
+//  SPEECH RECOGNITION
+// ════════════════════════════════════════════
+let recognition = null;
+let isRecording  = false;
+let currentLang  = 'ja-JP';
+
+const recBtn   = document.getElementById('recBtn');
+const recLbl   = document.getElementById('recLabel');
+const statusEl = document.getElementById('statusEl');
+const statusTx = document.getElementById('statusTxt');
+const errMsg   = document.getElementById('errMsg');
+const stage    = document.getElementById('stage');
+
+function setLang(lang) {
+  currentLang = lang;
+  document.getElementById('btnJA').classList.toggle('active', lang === 'ja-JP');
+  document.getElementById('btnEN').classList.toggle('active', lang === 'en-US');
+  if (isRecording) { stopRecognitionOnly(); setTimeout(startRecognitionOnly, 300); }
+}
+
+function toggleRec() { isRecording ? stopRec() : startRec(); }
+
+function startRec() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { showErr('この端末・ブラウザは音声認識に対応していません。'); return; }
+  hideErr();
+  isRecording = true;
+  recBtn.classList.add('on');
+  recLbl.textContent = currentLang === 'ja-JP' ? '停止' : 'Stop';
+  startRecognitionOnly();
+}
+
+function startRecognitionOnly() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  recognition = new SR();
+  recognition.lang = currentLang;
+  recognition.continuous = true;
+  recognition.interimResults = true;
+
+  recognition.onstart = () => {
+    setSt('listening', currentLang === 'ja-JP' ? '音声認識中' : 'Listening');
+  };
+
+  recognition.onresult = e => {
+    let newFinal = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) newFinal += e.results[i][0].transcript;
+    }
+    if (newFinal.trim()) handleFinalChunk(newFinal.trim());
+  };
+
+  recognition.onerror = e => { if (e.error !== 'no-speech') showErr('認識エラー: ' + e.error); };
+  recognition.onend   = () => { if (isRecording) try { recognition.start(); } catch(_){} };
+  recognition.start();
+}
+
+function stopRec() {
+  isRecording = false;
+  stopRecognitionOnly();
+  recBtn.classList.remove('on');
+  recLbl.textContent = currentLang === 'ja-JP' ? '録音開始' : 'Start';
+  setSt('idle', '待機中');
+}
+
+function stopRecognitionOnly() {
+  if (recognition) { recognition.stop(); recognition = null; }
+}
+
+// ════════════════════════════════════════════
+//  PER-CHUNK PROCESSING (instant, fully local)
+// ════════════════════════════════════════════
+function splitSentences(text) {
+  return text.split(/(?<=[。！？!?])\s*/).filter(s => s.trim());
+}
+
+function handleFinalChunk(text) {
+  splitSentences(text).forEach(sentence => {
+    const chips = currentLang === 'ja-JP' ? tokenizeJA(sentence) : tokenizeEN(sentence);
+    if (chips.length) addChips(chips);
+  });
+}
+
+// ════════════════════════════════════════════
+//  CHIP RENDERING
+// ════════════════════════════════════════════
+function addChips(keywords) {
+  if (!keywords.length) return;
+  const hint = document.getElementById('kwHint');
+  if (hint) hint.remove();
+
+  // each sentence becomes its own block (ruled off from the next), like a notepad page
+  const block = document.createElement('div');
+  block.className = 'kw-block';
+
+  const row = document.createElement('div');
+  row.className = 'kw-row';
+
+  keywords.forEach(kw => {
+    const chip = document.createElement('span');
+    const type = ['name', 'number', 'connector'].includes(kw.type) ? kw.type : 'term';
+    chip.className = 'chip ' + type;
+    chip.textContent = kw.text;
+    row.appendChild(chip);
+  });
+
+  block.appendChild(row);
+  stage.appendChild(block);
+  stage.scrollLeft = stage.scrollWidth;
+}
+
+function clearStage() {
+  stage.innerHTML = '<div class="kw-hint" id="kwHint">録音を開始すると、発言のキーワードがここに順番に表示されます。<br>発言が一区切りしたら「クリア」を押して次の発言に備えてください。</div>';
+  hideErr();
+}
+
+function setSt(cls, txt) { statusEl.className = 'status ' + cls; statusTx.textContent = txt; }
+function showErr(m) { errMsg.textContent = m; errMsg.classList.add('on'); }
+function hideErr()  { errMsg.classList.remove('on'); }
+</script>
+</body>
+</html>
